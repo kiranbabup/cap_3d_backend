@@ -65,28 +65,51 @@ async def upload_images(files: list[UploadFile] = File(...)):
 
 
 @app.post("/api/process")
-def process_to_3d(image_names: list[str]):
+async def process_to_3d(image_names: list[str]):
     if not image_names:
         raise HTTPException(status_code=400, detail="Image list cannot be empty.")
+
+    # For now, we take the first image to generate 3D
+    input_image_name = image_names[0]
+    img_path = UPLOAD_DIR / input_image_name
+    
+    if not img_path.exists():
+        raise HTTPException(status_code=404, detail=f"Image {input_image_name} not found.")
 
     job_id = str(uuid4())
     output_name = f"{job_id}.glb"
     output_path = OUTPUT_DIR / output_name
-    output_path.write_text(
-        "Mock GLB placeholder. Replace with real PyTorch/Open3D pipeline output.",
-        encoding="utf-8",
-    )
 
-    jobs[job_id] = {
+    # Run Blender in background mode
+    try:
+        # Use the relative path to blender_logic.py from the project root
+        logic_script = BASE_DIR / "app" / "blender_logic.py"
+        
+        process = subprocess.run([
+            "blender", "-b", "--python", str(logic_script), 
+            "--", str(img_path), str(output_path)
+        ], capture_output=True, text=True)
+
+        if process.returncode != 0:
+            print("Blender Error Output:", process.stderr)
+            raise HTTPException(status_code=500, detail="Blender processing failed.")
+
+    except Exception as e:
+        print(f"Exception during processing: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    job_data = {
         "jobId": job_id,
         "status": "completed",
         "uploadedImages": image_names,
         "createdAt": datetime.utcnow().isoformat(),
         "modelFile": output_name,
-        "segments": ["panel_A", "panel_B", "panel_C"],
-        "supportedDownloads": ["glb", "obj", "stl"],
+        "modelUrl": f"/outputs/{output_name}",
+        "segments": ["main_mesh"],
+        "supportedDownloads": ["glb"],
     }
-    return jobs[job_id]
+    jobs[job_id] = job_data
+    return job_data
 
 
 @app.get("/api/jobs/{job_id}")
@@ -104,12 +127,12 @@ def download_details(job_id: str, fmt: str):
         raise HTTPException(status_code=404, detail="Job not found.")
 
     fmt = fmt.lower()
-    if fmt not in {"glb", "obj", "stl"}:
-        raise HTTPException(status_code=400, detail="Format must be glb, obj, or stl.")
+    if fmt not in {"glb"}:
+        raise HTTPException(status_code=400, detail="Currently only GLB is supported for real generation.")
 
     return {
         "jobId": job_id,
         "format": fmt,
-        "message": "Download endpoint ready. Integrate file conversion here.",
-        "file": f"{job_id}.{fmt}",
+        "url": f"/outputs/{job.get('modelFile')}",
+        "message": "Download link generated.",
     }
